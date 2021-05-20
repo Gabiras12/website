@@ -98,48 +98,21 @@ const getConfig = (inputs, state) => {
     inputs.distributionDescription || `Website distribution for bucket ${config.bucketName}`
   config.distributionDefaults = inputs.distributionDefaults
 
-  if (inputs.nakedDomain) {
-    // workaround for deploys with complex subdomains
-    config.domain = inputs.nakedDomain.replace('https://', '').replace('http://', '')
-    // ensure naked domain is used
-    config.nakedDomain = config.domain ? getNakedDomain(config.domain) : null
-    config.domainHostedZoneId = config.domain ? state.domainHostedZoneId : null
-    config.certificateArn = state.certificateArn
 
-    if (inputs.customSubdomain) {
-      // if user input custom subdomain (e.g. *.subdomain), make sure setup this domain: customSubdomain + nakedDomain
-      config.domain = `${inputs.customSubdomain}.${config.nakedDomain}`
-    } else {
-      // if user input example.com, make sure we also setup www.example.com
-      if (config.domain && config.domain === config.nakedDomain) {
-        config.domain = `www.${config.domain}`
-      }
-    }
-  } else {
-    // in case user specified protocol
-    config.domain = inputs.domain ?
-      inputs.domain.replace('https://', '').replace('http://', '') :
-      null
-    config.nakedDomain = config.domain ? getNakedDomain(config.domain) : null
-    config.domainHostedZoneId = config.domain ? state.domainHostedZoneId : null
-    config.certificateArn = state.certificateArn
+  // in case user specified protocol
+  config.domain = inputs.domain ?
+    inputs.domain.replace('https://', '').replace('http://', '') :
+    null
+  config.nakedDomain = config.domain ? getNakedDomain(config.domain) : null
+  config.domainHostedZoneId = config.domain ? state.domainHostedZoneId : null
+  config.certificateArn = state.certificateArn
 
-    // if user input example.com, make sure we also setup www.example.com
-    if (config.domain && config.domain === config.nakedDomain) {
-      config.domain = `www.${config.domain}`
-    }
+  // if user input example.com, make sure we also setup www.example.com
+  if (config.domain && config.domain === config.nakedDomain) {
+    config.domain = `www.${config.domain}`
   }
 
-  // check if domain and nakedDomain are valid
-  if (config.nakedDomain && !isValidDomain(config.nakedDomain)) {
-    const msg = `Invalid nakedDomain ${config.nakedDomain}`
-    throw new Error(msg)
-  }
-
-  if (config.domain && !isValidDomain(config.domain, { wildcard: true, subdomain: true })) {
-    const msg = `Invalid domain ${config.domain}`
-    throw new Error(msg)
-  }
+  config.generateWildcardSubdomain = inputs.generateWildcardSubdomain
 
   return config
 }
@@ -438,11 +411,12 @@ const describeCertificateByArn = async (clients, certificateArn, domain) => {
 }
 
 const ensureCertificate = async (clients, config, instance) => {
-  const wildcardSubDomain = `*.${config.nakedDomain}`
-
+  const domain = config.generateWildcardSubdomain ? config.domain : config.nakedDomain
+  const wildcardSubDomain = `*.${domain}` 
+  
   const params = {
     DomainName: config.nakedDomain,
-    SubjectAlternativeNames: [config.nakedDomain, wildcardSubDomain],
+    SubjectAlternativeNames: [domain, wildcardSubDomain],
     ValidationMethod: 'DNS'
   }
 
@@ -636,9 +610,14 @@ const createCloudFrontDistribution = async (clients, config) => {
       Items: [config.domain]
     }
 
+    if (config.generateWildcardSubdomain) {
+      distributionConfig.Aliases.Quantity += 1
+      distributionConfig.Aliases.Items.push(`*.${config.domain}`)
+    }
+
     if (shouldConfigureNakedDomain(config.domain)) {
       log(`Adding domain "${config.nakedDomain}" to CloudFront distribution`)
-      distributionConfig.Aliases.Quantity = 2
+      distributionConfig.Aliases.Quantity += 1
       distributionConfig.Aliases.Items.push(config.nakedDomain)
     }
   }
@@ -707,9 +686,14 @@ const updateCloudFrontDistribution = async (clients, config) => {
         Items: [config.domain]
       }
 
+      if (config.generateWildcardSubdomain) {
+        params.DistributionConfig.Aliases.Quantity += 1
+        params.DistributionConfig.Aliases.Items.push(`*.${config.domain}`)
+      }
+
       if (shouldConfigureNakedDomain(config.domain)) {
         log(`Adding domain "${config.nakedDomain}" to CloudFront distribution`)
-        params.DistributionConfig.Aliases.Quantity = 2
+        params.DistributionConfig.Aliases.Quantity += 1
         params.DistributionConfig.Aliases.Items.push(config.nakedDomain)
       }
     }
@@ -757,18 +741,44 @@ const configureDnsForCloudFrontDistribution = async (clients, config) => {
   const dnsRecordParams = {
     HostedZoneId: config.domainHostedZoneId,
     ChangeBatch: {
-      Changes: [{
-        Action: 'UPSERT',
-        ResourceRecordSet: {
-          Name: config.domain,
-          Type: 'A',
-          AliasTarget: {
-            HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
-            DNSName: config.distributionUrl,
-            EvaluateTargetHealth: false
+      Changes: config.generateWildcardSubdomain ? [{
+          Action: 'UPSERT',
+          ResourceRecordSet: {
+            Name: config.domain,
+            Type: 'A',
+            AliasTarget: {
+              HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
+              DNSName: config.distributionUrl,
+              EvaluateTargetHealth: false
+            }
+          }
+        },
+        {
+          Action: 'UPSERT',
+          ResourceRecordSet: {
+            Name: '*.' + config.domain,
+            Type: 'A',
+            AliasTarget: {
+              HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
+              DNSName: config.distributionUrl,
+              EvaluateTargetHealth: false
+            }
           }
         }
-      }]
+      ] : [
+        {
+          Action: 'UPSERT',
+          ResourceRecordSet: {
+            Name: config.domain,
+            Type: 'A',
+            AliasTarget: {
+              HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
+              DNSName: config.distributionUrl,
+              EvaluateTargetHealth: false
+            }
+          }
+        }
+      ]
     }
   }
 
