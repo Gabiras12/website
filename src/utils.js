@@ -4,7 +4,6 @@ const path = require('path')
 const klawSync = require('klaw-sync')
 const mime = require('mime-types')
 const https = require('https')
-const isValidDomain = require('is-valid-domain')
 
 const {
   parseDomain
