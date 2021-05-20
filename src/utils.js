@@ -4,7 +4,11 @@ const path = require('path')
 const klawSync = require('klaw-sync')
 const mime = require('mime-types')
 const https = require('https')
-const { parseDomain } = require('parse-domain')
+const isValidDomain = require('is-valid-domain')
+
+const {
+  parseDomain
+} = require('parse-domain')
 const agent = new https.Agent({
   keepAlive: true
 })
@@ -15,8 +19,8 @@ const sleep = async (wait) => new Promise((resolve) => setTimeout(() => resolve(
 
 const generateId = () =>
   Math.random()
-    .toString(36)
-    .substring(6)
+  .toString(36)
+  .substring(6)
 
 const getClients = (credentials, region) => {
   // this error message assumes that the user is running via the CLI though...
@@ -41,7 +45,10 @@ const getClients = (credentials, region) => {
       // we need two S3 clients because creating/deleting buckets
       // is not available with the acceleration feature.
       regular: new AWS.S3(params),
-      accelerated: new AWS.S3({ ...params, endpoint: `s3-accelerate.amazonaws.com` })
+      accelerated: new AWS.S3({
+        ...params,
+        endpoint: `s3-accelerate.amazonaws.com`
+      })
     },
     cf: new AWS.CloudFront(params),
     route53: new AWS.Route53(params),
@@ -91,17 +98,47 @@ const getConfig = (inputs, state) => {
     inputs.distributionDescription || `Website distribution for bucket ${config.bucketName}`
   config.distributionDefaults = inputs.distributionDefaults
 
-  // in case user specified protocol
-  config.domain = inputs.domain
-    ? inputs.domain.replace('https://', '').replace('http://', '')
-    : null
-  config.nakedDomain = config.domain ? getNakedDomain(config.domain) : null
-  config.domainHostedZoneId = config.domain ? state.domainHostedZoneId : null
-  config.certificateArn = state.certificateArn
+  if (inputs.nakedDomain) {
+    // workaround for deploys with complex subdomains
+    config.domain = inputs.nakedDomain.replace('https://', '').replace('http://', '')
+    // ensure naked domain is used
+    config.nakedDomain = config.domain ? getNakedDomain(config.domain) : null
+    config.domainHostedZoneId = config.domain ? state.domainHostedZoneId : null
+    config.certificateArn = state.certificateArn
 
-  // if user input example.com, make sure we also setup www.example.com
-  if (config.domain && config.domain === config.nakedDomain) {
-    config.domain = `www.${config.domain}`
+    if (inputs.customSubdomain) {
+      // if user input custom subdomain (e.g. *.subdomain), make sure setup this domain: customSubdomain + nakedDomain
+      config.domain = `${inputs.customSubdomain}.${config.nakedDomain}`
+    } else {
+      // if user input example.com, make sure we also setup www.example.com
+      if (config.domain && config.domain === config.nakedDomain) {
+        config.domain = `www.${config.domain}`
+      }
+    }
+  } else {
+    // in case user specified protocol
+    config.domain = inputs.domain ?
+      inputs.domain.replace('https://', '').replace('http://', '') :
+      null
+    config.nakedDomain = config.domain ? getNakedDomain(config.domain) : null
+    config.domainHostedZoneId = config.domain ? state.domainHostedZoneId : null
+    config.certificateArn = state.certificateArn
+
+    // if user input example.com, make sure we also setup www.example.com
+    if (config.domain && config.domain === config.nakedDomain) {
+      config.domain = `www.${config.domain}`
+    }
+  }
+
+  // check if domain and nakedDomain are valid
+  if (config.nakedDomain && !isValidDomain(config.nakedDomain)) {
+    const msg = `Invalid nakedDomain ${config.nakedDomain}`
+    throw new Error(msg)
+  }
+
+  if (config.domain && !isValidDomain(config.domain, { wildcard: true, subdomain: true })) {
+    const msg = `Invalid domain ${config.domain}`
+    throw new Error(msg)
   }
 
   return config
@@ -132,7 +169,9 @@ const accelerateBucket = async (clients, bucketName) => {
 
 const bucketCreation = async (clients, Bucket) => {
   try {
-    await clients.s3.regular.headBucket({ Bucket }).promise()
+    await clients.s3.regular.headBucket({
+      Bucket
+    }).promise()
   } catch (e) {
     if (e.code === 'NotFound' || e.code === 'NoSuchBucket') {
       await sleep(2000)
@@ -145,11 +184,15 @@ const bucketCreation = async (clients, Bucket) => {
 const ensureBucket = async (clients, bucketName, instance) => {
   try {
     log(`Checking if bucket ${bucketName} exists.`)
-    await clients.s3.regular.headBucket({ Bucket: bucketName }).promise()
+    await clients.s3.regular.headBucket({
+      Bucket: bucketName
+    }).promise()
   } catch (e) {
     if (e.code === 'NotFound') {
       log(`Bucket ${bucketName} does not exist. Creating...`)
-      await clients.s3.regular.createBucket({ Bucket: bucketName }).promise()
+      await clients.s3.regular.createBucket({
+        Bucket: bucketName
+      }).promise()
       // there's a race condition when using acceleration
       // so we need to sleep for a couple seconds. See this issue:
       // https://github.com/serverless/components/issues/428
@@ -242,17 +285,15 @@ const uploadDir = async (clients, bucketName, zipPath, instance) => {
 const configureBucketForHosting = async (clients, bucketName, indexDocument, errorDocument) => {
   const s3BucketPolicy = {
     Version: '2012-10-17',
-    Statement: [
-      {
-        Sid: 'PublicReadGetObject',
-        Effect: 'Allow',
-        Principal: {
-          AWS: '*'
-        },
-        Action: ['s3:GetObject'],
-        Resource: [`arn:aws:s3:::${bucketName}/*`]
-      }
-    ]
+    Statement: [{
+      Sid: 'PublicReadGetObject',
+      Effect: 'Allow',
+      Principal: {
+        AWS: '*'
+      },
+      Action: ['s3:GetObject'],
+      Resource: [`arn:aws:s3:::${bucketName}/*`]
+    }]
   }
   const staticHostParams = {
     Bucket: bucketName,
@@ -308,13 +349,18 @@ const configureBucketForHosting = async (clients, bucketName, indexDocument, err
 
 const clearBucket = async (clients, bucketName) => {
   try {
-    const data = await callAcceleratedOrRegular(clients, 'listObjects', { Bucket: bucketName })
+    const data = await callAcceleratedOrRegular(clients, 'listObjects', {
+      Bucket: bucketName
+    })
 
     const items = data.Contents
     const promises = []
 
     for (var i = 0; i < items.length; i += 1) {
-      var deleteParams = { Bucket: bucketName, Key: items[i].Key }
+      var deleteParams = {
+        Bucket: bucketName,
+        Key: items[i].Key
+      }
       const delObj = callAcceleratedOrRegular(clients, 'deleteObject', deleteParams)
       promises.push(delObj)
     }
@@ -329,7 +375,9 @@ const clearBucket = async (clients, bucketName) => {
 
 const deleteBucket = async (clients, bucketName) => {
   try {
-    await clients.s3.regular.deleteBucket({ Bucket: bucketName }).promise()
+    await clients.s3.regular.deleteBucket({
+      Bucket: bucketName
+    }).promise()
   } catch (error) {
     if (error.code !== 'NoSuchBucket') {
       throw error
@@ -373,7 +421,9 @@ const getCertificateValidationRecord = (certificate, domain) => {
 }
 
 const describeCertificateByArn = async (clients, certificateArn, domain) => {
-  const res = await clients.acm.describeCertificate({ CertificateArn: certificateArn }).promise()
+  const res = await clients.acm.describeCertificate({
+    CertificateArn: certificateArn
+  }).promise()
   const certificate = res && res.Certificate ? res.Certificate : null
 
   if (
@@ -420,21 +470,17 @@ const ensureCertificate = async (clients, config, instance) => {
       const recordParams = {
         HostedZoneId: config.domainHostedZoneId,
         ChangeBatch: {
-          Changes: [
-            {
-              Action: 'UPSERT',
-              ResourceRecordSet: {
-                Name: certificateValidationRecord.Name,
-                Type: certificateValidationRecord.Type,
-                TTL: 300,
-                ResourceRecords: [
-                  {
-                    Value: certificateValidationRecord.Value
-                  }
-                ]
-              }
+          Changes: [{
+            Action: 'UPSERT',
+            ResourceRecordSet: {
+              Name: certificateValidationRecord.Name,
+              Type: certificateValidationRecord.Type,
+              TTL: 300,
+              ResourceRecords: [{
+                Value: certificateValidationRecord.Value
+              }]
             }
-          ]
+          }]
         }
       }
       await clients.route53.changeResourceRecordSets(recordParams).promise()
@@ -482,8 +528,7 @@ const createCloudFrontDistribution = async (clients, config) => {
       DefaultRootObject: 'index.html',
       CustomErrorResponses: {
         Quantity: 2,
-        Items: [
-          {
+        Items: [{
             ErrorCode: 404,
             ErrorCachingMinTTL: 300,
             ResponseCode: '200',
@@ -511,20 +556,18 @@ const createCloudFrontDistribution = async (clients, config) => {
       HttpVersion: 'http2',
       Origins: {
         Quantity: 1,
-        Items: [
-          {
-            Id: config.bucketName,
-            DomainName: `${config.bucketName}.s3.${config.region}.amazonaws.com`,
-            CustomHeaders: {
-              Quantity: 0,
-              Items: []
-            },
-            OriginPath: '',
-            S3OriginConfig: {
-              OriginAccessIdentity: ''
-            }
+        Items: [{
+          Id: config.bucketName,
+          DomainName: `${config.bucketName}.s3.${config.region}.amazonaws.com`,
+          CustomHeaders: {
+            Quantity: 0,
+            Items: []
+          },
+          OriginPath: '',
+          S3OriginConfig: {
+            OriginAccessIdentity: ''
           }
-        ]
+        }]
       },
       DefaultCacheBehavior: {
         TargetOriginId: config.bucketName,
@@ -629,7 +672,9 @@ const updateCloudFrontDistribution = async (clients, config) => {
 
     // 1. we gotta get the config first...
     // todo what if id does not exist?
-    const params = await clients.cf.getDistributionConfig({ Id: config.distributionId }).promise()
+    const params = await clients.cf.getDistributionConfig({
+      Id: config.distributionId
+    }).promise()
 
     // 2. then add this property
     params.IfMatch = params.ETag
@@ -712,20 +757,18 @@ const configureDnsForCloudFrontDistribution = async (clients, config) => {
   const dnsRecordParams = {
     HostedZoneId: config.domainHostedZoneId,
     ChangeBatch: {
-      Changes: [
-        {
-          Action: 'UPSERT',
-          ResourceRecordSet: {
-            Name: config.domain,
-            Type: 'A',
-            AliasTarget: {
-              HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
-              DNSName: config.distributionUrl,
-              EvaluateTargetHealth: false
-            }
+      Changes: [{
+        Action: 'UPSERT',
+        ResourceRecordSet: {
+          Name: config.domain,
+          Type: 'A',
+          AliasTarget: {
+            HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
+            DNSName: config.distributionUrl,
+            EvaluateTargetHealth: false
           }
         }
-      ]
+      }]
     }
   }
 
@@ -748,7 +791,9 @@ const configureDnsForCloudFrontDistribution = async (clients, config) => {
 }
 
 const disableCloudFrontDistribution = async (clients, distributionId) => {
-  const params = await clients.cf.getDistributionConfig({ Id: distributionId }).promise()
+  const params = await clients.cf.getDistributionConfig({
+    Id: distributionId
+  }).promise()
 
   params.IfMatch = params.ETag
 
@@ -769,9 +814,14 @@ const disableCloudFrontDistribution = async (clients, distributionId) => {
 
 const deleteCloudFrontDistribution = async (clients, distributionId) => {
   try {
-    const res = await clients.cf.getDistributionConfig({ Id: distributionId }).promise()
+    const res = await clients.cf.getDistributionConfig({
+      Id: distributionId
+    }).promise()
 
-    const params = { Id: distributionId, IfMatch: res.ETag }
+    const params = {
+      Id: distributionId,
+      IfMatch: res.ETag
+    }
     await clients.cf.deleteDistribution(params).promise()
   } catch (e) {
     if (e.code === 'DistributionNotDisabled') {
@@ -786,7 +836,9 @@ const deleteCloudFrontDistribution = async (clients, distributionId) => {
 
 const removeDomainFromCloudFrontDistribution = async (clients, config) => {
   try {
-    const params = await clients.cf.getDistributionConfig({ Id: config.distributionId }).promise()
+    const params = await clients.cf.getDistributionConfig({
+      Id: config.distributionId
+    }).promise()
 
     params.IfMatch = params.ETag
 
@@ -825,20 +877,18 @@ const removeCloudFrontDomainDnsRecords = async (clients, config) => {
   const params = {
     HostedZoneId: config.domainHostedZoneId,
     ChangeBatch: {
-      Changes: [
-        {
-          Action: 'DELETE',
-          ResourceRecordSet: {
-            Name: config.domain,
-            Type: 'A',
-            AliasTarget: {
-              HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
-              DNSName: config.distributionUrl,
-              EvaluateTargetHealth: false
-            }
+      Changes: [{
+        Action: 'DELETE',
+        ResourceRecordSet: {
+          Name: config.domain,
+          Type: 'A',
+          AliasTarget: {
+            HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
+            DNSName: config.distributionUrl,
+            EvaluateTargetHealth: false
           }
         }
-      ]
+      }]
     }
   }
 
@@ -890,22 +940,20 @@ const createOrUpdateMetaRole = async (instance, inputs, clients, serverlessAccou
     // Create a policy that only can access APIGateway and Lambda metrics, logs from CloudWatch...
     const policy = {
       Version: '2012-10-17',
-      Statement: [
-        {
-          Effect: 'Allow',
-          Resource: '*',
-          Action: [
-            'cloudwatch:Describe*',
-            'cloudwatch:Get*',
-            'cloudwatch:List*',
-            'logs:Get*',
-            'logs:List*',
-            'logs:Describe*',
-            'logs:TestMetricFilter',
-            'logs:FilterLogEvents',
-          ],
-        },
-      ],
+      Statement: [{
+        Effect: 'Allow',
+        Resource: '*',
+        Action: [
+          'cloudwatch:Describe*',
+          'cloudwatch:Get*',
+          'cloudwatch:List*',
+          'logs:Get*',
+          'logs:List*',
+          'logs:Describe*',
+          'logs:TestMetricFilter',
+          'logs:FilterLogEvents',
+        ],
+      }, ],
     };
 
     const roleDescription = `The Meta Role for the Serverless Framework App: ${instance.name} Stage: ${instance.stage}`;
@@ -964,7 +1012,9 @@ const getMetrics = async (
   assumeParams.RoleArn = metaRoleArn;
   assumeParams.DurationSeconds = 900;
 
-  const sts = new AWS.STS({ region })
+  const sts = new AWS.STS({
+    region
+  })
   const resAssume = await sts.assumeRole(assumeParams).promise();
 
   const roleCreds = {};
@@ -981,12 +1031,10 @@ const getMetrics = async (
     region,
   })
 
-  const resources = [
-    {
-      type: 'aws_cloudfront',
-      distributionId,
-    },
-  ];
+  const resources = [{
+    type: 'aws_cloudfront',
+    distributionId,
+  }, ];
 
   return await extras.getMetrics({
     rangeStart,
