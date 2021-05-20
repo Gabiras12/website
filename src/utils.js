@@ -414,31 +414,31 @@ const ensureCertificate = async (clients, config, instance) => {
   const wildcardSubDomain = `*.${domain}` 
   
   const params = {
-    DomainName: config.nakedDomain,
+    DomainName: domain,
     SubjectAlternativeNames: [domain, wildcardSubDomain],
     ValidationMethod: 'DNS'
   }
 
-  log(`Checking if a certificate for the ${config.nakedDomain} domain exists`)
+  log(`Checking if a certificate for the ${domain} domain exists`)
   let certificateArn = await getCertificateArnByDomain(clients, config)
 
   if (!certificateArn) {
-    log(`Certificate for the ${config.nakedDomain} domain does not exist. Creating...`)
+    log(`Certificate for the ${domain} domain does not exist. Creating...`)
     certificateArn = (await clients.acm.requestCertificate(params).promise()).CertificateArn
   }
 
-  const certificate = await describeCertificateByArn(clients, certificateArn, config.nakedDomain)
+  const certificate = await describeCertificateByArn(clients, certificateArn, domain)
 
-  log(`Certificate for ${config.nakedDomain} is in a "${certificate.Status}" status`)
+  log(`Certificate for ${domain} is in a "${certificate.Status}" status`)
 
   if (certificate.Status === 'PENDING_VALIDATION') {
     const certificateValidationRecord = getCertificateValidationRecord(
       certificate,
-      config.nakedDomain
+      domain
     )
     // only validate if domain/hosted zone is found in this account
     if (config.domainHostedZoneId) {
-      log(`Validating the certificate for the ${config.nakedDomain} domain.`)
+      log(`Validating the certificate for the ${domain} domain.`)
 
       const recordParams = {
         HostedZoneId: config.domainHostedZoneId,
@@ -466,7 +466,7 @@ const ensureCertificate = async (clients, config, instance) => {
     } else {
       // if domain is not in account, let the user validate manually
       log(
-        `Certificate for the ${config.nakedDomain} domain was created, but not validated. Please validate it manually.`
+        `Certificate for the ${domain} domain was created, but not validated. Please validate it manually.`
       )
       log(`Certificate Validation Record Name: ${certificateValidationRecord.Name} `)
       log(`Certificate Validation Record Type: ${certificateValidationRecord.Type} `)
