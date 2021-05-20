@@ -902,9 +902,24 @@ const removeCloudFrontDomainDnsRecords = async (clients, config) => {
     }
   }
 
+  if (config.generateWildcardSubdomain) {
+    params.ChangeBatch.Changes.push({
+      Action: 'DELETE',
+      ResourceRecordSet: {
+        Name: `*.${config.domain}`,
+        Type: 'A',
+        AliasTarget: {
+          HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
+          DNSName: config.distributionUrl,
+          EvaluateTargetHealth: false
+        }
+      }
+    })
+  }
+
   if (shouldConfigureNakedDomain(config.domain)) {
     params.ChangeBatch.Changes.push({
-      Action: 'UPSERT',
+      Action: 'DELETE',
       ResourceRecordSet: {
         Name: config.nakedDomain,
         Type: 'A',
