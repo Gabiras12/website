@@ -871,9 +871,9 @@ const deleteCloudFrontDistribution = async (clients, distributionId) => {
       log('Trying to delete Cloudfront but it was in DistributionNotDisabled state...')
       log('Disabling it and retrying delete')
       await disableCloudFrontDistribution(clients, distributionId)
-      log('Awaiting for CF to status to be deployed...')
-      await awaitForCFDistributionDeployed(clients, distributionId)
-      await deleteCloudFrontDistribution(clients, distributionId)
+      // log('Awaiting for CF to status to be deployed...')
+      // await awaitForCFDistributionDeployed(clients, distributionId)
+      // await deleteCloudFrontDistribution(clients, distributionId)
     } else if (e.code === 'NoSuchDistribution') {
       return
     } else {
@@ -883,7 +883,6 @@ const deleteCloudFrontDistribution = async (clients, distributionId) => {
 }
 
 const deleteCertificateForDomain = async (clients, certificateArn) => {
-  
   try {
     await clients.acm.deleteCertificate({
       CertificateArn: certificateArn
