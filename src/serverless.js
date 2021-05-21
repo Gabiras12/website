@@ -25,6 +25,8 @@ const {
 class Website extends Component {
   async deploy(inputs) {
     let config = getConfig(inputs, this.state)
+    log(`Deploying website with config: `, config)
+
 
     const clients = getClients(this.credentials.aws, config.region)
 
@@ -125,6 +127,7 @@ class Website extends Component {
       await configureDnsForCloudFrontDistribution(clients, config)
       this.state.domain = config.domain
       this.state.nakedDomain = config.nakedDomain
+      this.state.generateWildcardSubdomain = config.generateWildcardSubdomain
       await this.save()
     } else if (config.domain && !config.domainHostedZoneId) {
       log(
@@ -132,6 +135,7 @@ class Website extends Component {
       )
       this.state.domain = config.domain
       this.state.nakedDomain = config.nakedDomain
+      this.state.generateWildcardSubdomain = config.generateWildcardSubdomain
       await this.save()
     }
 

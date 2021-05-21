@@ -491,6 +491,8 @@ const ensureCertificate = async (clients, config, instance) => {
     )
   }
 
+  config.domainCertificate = domain
+
   return certificateArn
 }
 
@@ -594,7 +596,7 @@ const createCloudFrontDistribution = async (clients, config) => {
 
   // add domain and certificate config if certificate is valid and ISSUED
   if (config.certificateValid) {
-    log(`Adding "${config.nakedDomain}" certificate to CloudFront distribution`)
+    log(`Adding "${config.domainCertificate}" certificate to CloudFront distribution`)
     distributionConfig.ViewerCertificate = {
       ACMCertificateArn: config.certificateArn,
       SSLSupportMethod: 'sni-only',
@@ -610,6 +612,7 @@ const createCloudFrontDistribution = async (clients, config) => {
     }
 
     if (config.generateWildcardSubdomain) {
+      log(`Adding domain "*.${config.domain}" to CloudFront distribution`)
       distributionConfig.Aliases.Quantity += 1
       distributionConfig.Aliases.Items.push(`*.${config.domain}`)
     }
@@ -686,6 +689,7 @@ const updateCloudFrontDistribution = async (clients, config) => {
       }
 
       if (config.generateWildcardSubdomain) {
+        log(`Adding domain "*.${config.domain}" to CloudFront distribution`)
         params.DistributionConfig.Aliases.Quantity += 1
         params.DistributionConfig.Aliases.Items.push(`*.${config.domain}`)
       }
@@ -737,35 +741,12 @@ const invalidateCloudfrontDistribution = async (clients, config) => {
 }
 
 const configureDnsForCloudFrontDistribution = async (clients, config) => {
+
+  log(`Adding domain "${config.domain}" to point to "${config.distributionUrl}" via DNS A record`)
   const dnsRecordParams = {
     HostedZoneId: config.domainHostedZoneId,
     ChangeBatch: {
-      Changes: config.generateWildcardSubdomain ? [{
-          Action: 'UPSERT',
-          ResourceRecordSet: {
-            Name: config.domain,
-            Type: 'A',
-            AliasTarget: {
-              HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
-              DNSName: config.distributionUrl,
-              EvaluateTargetHealth: false
-            }
-          }
-        },
-        {
-          Action: 'UPSERT',
-          ResourceRecordSet: {
-            Name: '*.' + config.domain,
-            Type: 'A',
-            AliasTarget: {
-              HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
-              DNSName: config.distributionUrl,
-              EvaluateTargetHealth: false
-            }
-          }
-        }
-      ] : [
-        {
+      Changes: [{
           Action: 'UPSERT',
           ResourceRecordSet: {
             Name: config.domain,
@@ -781,7 +762,24 @@ const configureDnsForCloudFrontDistribution = async (clients, config) => {
     }
   }
 
+  if (config.generateWildcardSubdomain) {
+    log(`Adding domain "${'*.' + config.domain}" to point to "${config.distributionUrl}" via DNS A record`)
+    dnsRecordParams.ChangeBatch.Changes.push({
+      Action: 'UPSERT',
+      ResourceRecordSet: {
+        Name: '*.' + config.domain,
+        Type: 'A',
+        AliasTarget: {
+          HostedZoneId: 'Z2FDTNDATAQYW2', // this is a constant that you can get from here https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
+          DNSName: config.distributionUrl,
+          EvaluateTargetHealth: false
+        }
+      }
+    })
+  }
+
   if (shouldConfigureNakedDomain(config.domain)) {
+    log(`Adding domain "${config.nakedDomain}" to point to "${config.distributionUrl}" via DNS A record`)
     dnsRecordParams.ChangeBatch.Changes.push({
       Action: 'UPSERT',
       ResourceRecordSet: {
