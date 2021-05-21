@@ -409,6 +409,17 @@ const describeCertificateByArn = async (clients, certificateArn, domain) => {
   return certificate
 }
 
+const awaitForCertificateValidated = (clients, certificateArn) => {
+  return new Promise((resolve, reject) => {
+    clients.acm.waitFor('certificateValidated', {
+      CertificateArn: certificateArn
+    }, (err, data) => {
+      if (err) reject(err)
+      else resolve(data.Certificate)
+    })
+  })
+}
+
 const ensureCertificate = async (clients, config, instance) => {
   const domain = config.generateWildcardSubdomain ? config.domain : config.nakedDomain
   const wildcardSubDomain = `*.${domain}` 
@@ -457,12 +468,24 @@ const ensureCertificate = async (clients, config, instance) => {
         }
       }
       await clients.route53.changeResourceRecordSets(recordParams).promise()
-      log(
-        `Your certificate was created and is being validated. It may take a few mins to validate.`
-      )
-      log(
-        `Please deploy again after few mins to use your newly validated certificate and activate your domain.`
-      )
+
+      try {
+        log(
+          `Awaiting for certificate to be valid...`
+        )
+        const { Status } = await awaitForCertificateValidated(clients, certificateArn) 
+
+        log(`Certificate status validation: ${Status}.`)
+        config.certificateValid = Status === 'ISSUED'
+      } catch (error) {
+        log(
+          `Your certificate was created and is being validated. It may take a few mins to validate.`
+        )
+        log(
+          `Please deploy again after few mins to use your newly validated certificate and activate your domain.`
+        )
+        throw error
+      }
     } else {
       // if domain is not in account, let the user validate manually
       log(
