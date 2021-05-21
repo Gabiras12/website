@@ -842,8 +842,21 @@ const disableCloudFrontDistribution = async (clients, distributionId) => {
   }
 }
 
+const awaitForCFDistributionDeployed = (clients, distributionId) => {
+  return new Promise((resolve, reject) => {
+    clients.cf.waitFor('distributionDeployed', {
+      Id: distributionId
+    }, (err, data) => {
+      if (err) reject(err)
+      else resolve(data.Certificate)
+    })
+  })
+}
+
+
 const deleteCloudFrontDistribution = async (clients, distributionId) => {
   try {
+    log('Trying to delete CloudFront with id: ', distributionId)
     const res = await clients.cf.getDistributionConfig({
       Id: distributionId
     }).promise()
@@ -855,12 +868,28 @@ const deleteCloudFrontDistribution = async (clients, distributionId) => {
     await clients.cf.deleteDistribution(params).promise()
   } catch (e) {
     if (e.code === 'DistributionNotDisabled') {
+      log('Trying to delete Cloudfront but it was in DistributionNotDisabled state...')
+      log('Disabling it and retrying delete')
       await disableCloudFrontDistribution(clients, distributionId)
+      log('Awaiting for CF to status to be deployed...')
+      await awaitForCFDistributionDeployed(clients, distributionId)
+      await deleteCloudFrontDistribution(clients, distributionId)
     } else if (e.code === 'NoSuchDistribution') {
       return
     } else {
       throw e
     }
+  }
+}
+
+const deleteCertificateForDomain = async (clients, certificateArn) => {
+  
+  try {
+    await clients.acm.deleteCertificate({
+      CertificateArn: certificateArn
+    }).promise();  
+  } catch (error) {
+    log('Couldn\'t delete certificate... reason: ', JSON.stringify(error)) 
   }
 }
 
