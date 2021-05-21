@@ -373,10 +373,10 @@ const getDomainHostedZoneId = async (clients, config) => {
   return hostedZone.Id.replace('/hostedzone/', '') // hosted zone id is always prefixed with this :(
 }
 
-const getCertificateArnByDomain = async (clients, config) => {
+const getCertificateArnByDomain = async (clients, domain) => {
   const listRes = await clients.acm.listCertificates().promise()
   const certificate = listRes.CertificateSummaryList.find(
-    (cert) => cert.DomainName === config.nakedDomain
+    (cert) => cert.DomainName === domain
   )
   return certificate && certificate.CertificateArn ? certificate.CertificateArn : null
 }
@@ -420,7 +420,7 @@ const ensureCertificate = async (clients, config, instance) => {
   }
 
   log(`Checking if a certificate for the ${domain} domain exists`)
-  let certificateArn = await getCertificateArnByDomain(clients, config)
+  let certificateArn = await getCertificateArnByDomain(clients, domain)
 
   if (!certificateArn) {
     log(`Certificate for the ${domain} domain does not exist. Creating...`)

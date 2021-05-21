@@ -1,5 +1,5 @@
 name: website-wildcard-domains
-version: 1.2.6
+version: 1.2.7
 org: gabrieldeasilva
 description: Deploys Serverless Websites
 keywords: aws, serverless, website
